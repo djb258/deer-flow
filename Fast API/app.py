@@ -30,3 +30,4 @@ async def fire_quote(request: Request):
         "quote_input": quote_input,
         "output": output
     }
+	#redploy test
