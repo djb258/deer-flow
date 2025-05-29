@@ -7,7 +7,7 @@ Entry point script for the DeerFlow project.
 
 # ✅ Inject OpenAI key early for LangChain + OpenAI SDK
 import os
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = 
 
 import argparse
 import asyncio
