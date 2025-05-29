@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+httpx
+python-dotenv
+langchain
+langchain-openai
+langchain-anthropic
+langchain-google-genai
+langchain-perplexity
+
+

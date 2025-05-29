@@ -1,55 +1,45 @@
-# Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
-# SPDX-License-Identifier: MIT
-
 from pathlib import Path
-from typing import Any, Dict
-
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_perplexity import ChatPerplexity  # Ensure this is installed
 
 from src.config import load_yaml_config
-from src.config.agents import LLMType
 
-# Cache for LLM instances
-_llm_cache: dict[LLMType, ChatOpenAI] = {}
+_llm_cache = {}
 
+def get_llm_by_type(llm_type: str):
+    if llm_type == "basic":
+        llm_type = "openai"
 
-def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> ChatOpenAI:
-    llm_type_map = {
-        "reasoning": conf.get("REASONING_MODEL"),
-        "basic": conf.get("BASIC_MODEL"),
-        "vision": conf.get("VISION_MODEL"),
-    }
-    llm_conf = llm_type_map.get(llm_type)
-    if not llm_conf:
-        raise ValueError(f"Unknown LLM type: {llm_type}")
-    if not isinstance(llm_conf, dict):
-        raise ValueError(f"Invalid LLM Conf: {llm_type}")
-    return ChatOpenAI(**llm_conf)
-
-
-def get_llm_by_type(
-    llm_type: LLMType,
-) -> ChatOpenAI:
-    """
-    Get LLM instance by type. Returns cached instance if available.
-    """
     if llm_type in _llm_cache:
         return _llm_cache[llm_type]
 
-    conf = load_yaml_config(
-        str((Path(__file__).parent.parent.parent / "conf.yaml").resolve())
-    )
-    llm = _create_llm_use_conf(llm_type, conf)
+    conf = load_yaml_config(str((Path(__file__).parent.parent.parent / "conf.yaml").resolve()))
+
+    if llm_type == "openai":
+        llm_conf = conf.get("BASIC_MODEL")
+        llm = ChatOpenAI(base_url=llm_conf["base_url"], model=llm_conf["model"], api_key=llm_conf["api_key"])
+
+    elif llm_type == "claude":
+        llm_conf = conf.get("CLAUDE_MODEL")
+        llm = ChatAnthropic(api_key=llm_conf["api_key"], model=llm_conf["model"])
+
+    elif llm_type == "gemini":
+        llm_conf = conf.get("GEMINI_MODEL")
+        llm = ChatGoogleGenerativeAI(model=llm_conf["model"], google_api_key=llm_conf["api_key"])
+
+    elif llm_type == "perplexity":
+    	llm_conf = conf.get("PERPLEXITY_MODEL")
+    	llm = ChatOpenAI(
+       	    base_url=llm_conf["base_url"],
+       	    model=llm_conf["model"],
+            api_key=llm_conf["api_key"]
+       )
+
+
+    else:
+        raise ValueError(f"Unsupported LLM type: {llm_type}")
+
     _llm_cache[llm_type] = llm
     return llm
-
-
-# In the future, we will use reasoning_llm and vl_llm for different purposes
-# reasoning_llm = get_llm_by_type("reasoning")
-# vl_llm = get_llm_by_type("vision")
-
-
-if __name__ == "__main__":
-    # Initialize LLMs for different purposes - now these will be cached
-    basic_llm = get_llm_by_type("basic")
-    print(basic_llm.invoke("Hello"))

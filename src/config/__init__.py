@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
 
-from .tools import SELECTED_SEARCH_ENGINE, SearchEngine
+from .tools import SearchEngine
 from .loader import load_yaml_config
 from .questions import BUILT_IN_QUESTIONS, BUILT_IN_QUESTIONS_ZH_CN
 
@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# 🔧 Set default search engine for background investigation
+SELECTED_SEARCH_ENGINE = SearchEngine.TAVILY.value
 
 # Team configuration
 TEAM_MEMBER_CONFIGRATIONS = {
@@ -39,7 +42,6 @@ TEAM_MEMBER_CONFIGRATIONS = {
 TEAM_MEMBERS = list(TEAM_MEMBER_CONFIGRATIONS.keys())
 
 __all__ = [
-    # Other configurations
     "TEAM_MEMBERS",
     "TEAM_MEMBER_CONFIGRATIONS",
     "SELECTED_SEARCH_ENGINE",
@@ -47,3 +49,4 @@ __all__ = [
     "BUILT_IN_QUESTIONS",
     "BUILT_IN_QUESTIONS_ZH_CN",
 ]
+

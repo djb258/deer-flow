@@ -1,0 +1,94 @@
+# Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
+# SPDX-License-Identifier: MIT
+
+from pathlib import Path
+from typing import Any, Dict
+import os
+import openai
+import requests
+
+from langchain_openai import ChatOpenAI
+from src.config import load_yaml_config
+from src.config.agents import LLMType
+
+# Cache for LLM instances
+_llm_cache: dict[LLMType, ChatOpenAI] = {}
+
+def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> ChatOpenAI:
+    llm_type_map = {
+        "reasoning": conf.get("REASONING_MODEL"),
+        "basic": conf.get("BASIC_MODEL"),
+        "vision": conf.get("VISION_MODEL"),
+    }
+    llm_conf = llm_type_map.get(llm_type)
+    if not llm_conf:
+        raise ValueError(f"Unknown LLM type: {llm_type}")
+    if not isinstance(llm_conf, dict):
+        raise ValueError(f"Invalid LLM Conf: {llm_type}")
+    return ChatOpenAI(**llm_conf)
+
+def get_llm_by_type(llm_type: LLMType) -> ChatOpenAI:
+    """
+    Get LLM instance by type. Returns cached instance if available.
+    """
+    if llm_type in _llm_cache:
+        return _llm_cache[llm_type]
+
+    conf = load_yaml_config(
+        str((Path(__file__).parent.parent.parent / "conf.yaml").resolve())
+    )
+    llm = _create_llm_use_conf(llm_type, conf)
+    _llm_cache[llm_type] = llm
+    return llm
+
+# === Manual override methods ===
+
+def get_openai_llm():
+    return ChatOpenAI(
+        model="gpt-4o",
+        temperature=0.3,
+        api_key=os.getenv("OPENAI_API_KEY"),
+    )
+
+def get_llm_response(provider: str, prompt: str) -> str:
+    """
+    Unified LLM response handler for OpenAI, Claude, and Gemini.
+    Includes hardened fallback logic and clean error handling.
+    """
+    if provider == "openai":
+        return get_openai_llm().invoke(prompt).content.strip()
+
+    elif provider == "claude":
+        headers = {
+            "x-api-key": os.getenv("ANTHROPIC_API_KEY"),
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        json_data = {
+            "model": "claude-3-opus-20240229",
+            "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=json_data)
+        response_data = response.json()
+        try:
+            return response_data['content'][0]['text']
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError(f"[Claude Error] Response malformed: {response_data}")
+
+    elif provider == "gemini":
+        endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+        headers = {"Content-Type": "application/json"}
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+        params = {"key": os.getenv("GOOGLE_API_KEY")}
+        response = requests.post(endpoint, headers=headers, params=params, json=data)
+        response_data = response.json()
+        try:
+            return response_data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError(f"[Gemini Error] Response malformed: {response_data}")
+
+    else:
+        raise ValueError(f"Unknown LLM provider: {provider}")

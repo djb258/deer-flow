@@ -1,0 +1,290 @@
+import json
+import logging
+from typing import Annotated, Literal
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
+from langgraph.types import Command, interrupt
+
+from src.agents import create_agent
+from src.tools.search import LoggedTavilySearch
+from src.tools import crawl_tool, get_web_search_tool, python_repl_tool
+from src.config.configuration import Configuration
+from src.prompts.planner_model import Plan, StepType
+from src.prompts.template import apply_prompt_template
+from src.utils.json_utils import repair_json_output
+from src.llms.llm import get_openai_llm, get_llm_response
+
+from .types import State
+from ..config import SELECTED_SEARCH_ENGINE, SearchEngine
+
+logger = logging.getLogger(__name__)
+
+
+@tool
+def handoff_to_planner(
+    task_title: Annotated[str, "The title of the task to be handed off."],
+    locale: Annotated[str, "The user's detected language locale (e.g., en-US, zh-CN)."],
+):
+    """Signals that the coordinator is ready to pass control to the planner."""
+    return
+
+
+def coordinator_node(state: State) -> Command[Literal["planner", "background_investigator", "__end__"]]:
+    logger.info("Coordinator talking.")
+    messages = apply_prompt_template("coordinator", state)
+    llm = get_openai_llm()
+    response = llm.bind_tools([handoff_to_planner]).invoke(messages)
+    goto = "__end__"
+    locale = state.get("locale", "en-US")
+    if response.tool_calls:
+        goto = "planner"
+        if state.get("enable_background_investigation"):
+            goto = "background_investigator"
+        for tool_call in response.tool_calls:
+            if tool_call.get("name") == "handoff_to_planner":
+                locale = tool_call.get("args", {}).get("locale", locale)
+                break
+    return Command(update={"locale": locale}, goto=goto)
+
+
+def planner_node(state: State, config: RunnableConfig) -> Command[Literal["human_feedback", "reporter"]]:
+    logger.info("Planner generating full plan")
+    configurable = Configuration.from_runnable_config(config)
+    plan_iterations = state.get("plan_iterations", 0)
+    messages = apply_prompt_template("planner", state, configurable)
+
+    if plan_iterations == 0 and state.get("enable_background_investigation") and state.get("background_investigation_results"):
+        messages += [{"role": "user", "content": "background investigation results of user query:\n" + state["background_investigation_results"]}]
+
+    llm = get_openai_llm()
+    response = llm.invoke(messages)
+    full_response = "".join(chunk.content for chunk in response)
+
+    try:
+        curr_plan = json.loads(repair_json_output(full_response))
+        doctrinal_prompt = f"""
+You are a rewrite agent operating under the Barton Doctrine.
+
+Rewrite the following plan using:
+- 4th grade reading level
+- Structure: pain → system → ZIP → CTA
+- Add: "We don’t invent tools—we deliver them without chaos."
+- Tone: clear, blunt, no fluff
+
+Plan:
+{json.dumps(curr_plan, indent=2)}
+"""
+        try:
+            rewritten_summary = get_llm_response("claude", doctrinal_prompt)
+        except Exception:
+            logger.warning("Claude failed — falling back to Gemini.")
+            rewritten_summary = get_llm_response("gemini", doctrinal_prompt)
+
+        if curr_plan.get("has_enough_context"):
+            new_plan = Plan.model_validate(curr_plan)
+            return Command(
+                update={
+                    "messages": [AIMessage(content=rewritten_summary, name="planner")],
+                    "current_plan": new_plan
+                },
+                goto="reporter"
+            )
+
+        return Command(
+            update={
+                "messages": [AIMessage(content=rewritten_summary, name="planner")],
+                "current_plan": curr_plan
+            },
+            goto="human_feedback"
+        )
+
+    except json.JSONDecodeError:
+        logger.warning("Planner response is not valid JSON")
+        doctrinal_prompt = f"""
+You are a structured rewrite agent under the Barton Doctrine.
+
+Rewrite the following into:
+- Clear summary with bullet points
+- Barton tone (4th grade, blunt, zero fluff)
+- End with: “We don’t invent tools—we deliver them without chaos.”
+- Use markdown bullets and include citations if detected.
+
+Content:
+{full_response.strip()}
+"""
+        try:
+            rewritten_summary = get_llm_response("claude", doctrinal_prompt)
+        except Exception:
+            logger.warning("Claude failed — falling back to Gemini.")
+            rewritten_summary = get_llm_response("gemini", doctrinal_prompt)
+
+        return Command(
+            update={
+                "messages": [AIMessage(content=rewritten_summary, name="doctrinal_rewrite")],
+                "current_plan": full_response
+            },
+            goto="reporter"
+        )
+
+
+def reporter_node(state: State):
+    logger.info("Reporter writing final report")
+    current_plan = state.get("current_plan")
+
+    if isinstance(current_plan, dict):
+        title = current_plan.get("title", "Untitled")
+        thought = current_plan.get("thought", "No thought provided.")
+    elif hasattr(current_plan, "title") and hasattr(current_plan, "thought"):
+        title = current_plan.title
+        thought = current_plan.thought
+    else:
+        title = "Untitled"
+        thought = str(current_plan)
+
+    input_ = {
+        "messages": [
+            HumanMessage(f"# Research Requirements\n\n## Task\n\n{title}\n\n## Description\n\n{thought}")
+        ],
+        "locale": state.get("locale", "en-US"),
+    }
+
+    invoke_messages = apply_prompt_template("reporter", input_)
+    for obs in state.get("observations", []):
+        invoke_messages.append(HumanMessage(content=f"Observation:\n{obs}", name="observation"))
+    invoke_messages.append(HumanMessage(
+        content="IMPORTANT: Use markdown tables for analysis. End with a citations section using: `- [Source Title](URL)`.",
+        name="system"
+    ))
+
+    llm = get_openai_llm()
+    response = llm.invoke(invoke_messages)
+    return {"final_report": response.content}
+
+
+
+def research_team_node(state: State) -> Command[Literal["planner", "researcher", "coder"]]:
+    current_plan = state.get("current_plan")
+    if not current_plan or not current_plan.steps:
+        return Command(goto="planner")
+    for step in current_plan.steps:
+        if not step.execution_res:
+            if step.step_type == StepType.RESEARCH:
+                return Command(goto="researcher")
+            elif step.step_type == StepType.PROCESSING:
+                return Command(goto="coder")
+    return Command(goto="planner")
+
+
+async def researcher_node(state: State, config: RunnableConfig) -> Command[Literal["research_team"]]:
+    logger.info("Researcher is active")
+    configurable = Configuration.from_runnable_config(config)
+    tools = [get_web_search_tool(configurable.max_search_results), crawl_tool]
+    agent = create_agent("researcher", "researcher", tools, "researcher")
+    return await _execute_agent_step(state, agent, "researcher")
+
+
+async def coder_node(state: State, config: RunnableConfig) -> Command[Literal["research_team"]]:
+    logger.info("Coder is active")
+    tools = [python_repl_tool]
+    agent = create_agent("coder", "coder", tools, "coder")
+    return await _execute_agent_step(state, agent, "coder")
+
+
+async def _execute_agent_step(state: State, agent, agent_name: str) -> Command[Literal["research_team"]]:
+    current_plan = state.get("current_plan")
+    current_step = next((s for s in current_plan.steps if not s.execution_res), None)
+    completed_steps = [s for s in current_plan.steps if s.execution_res]
+    logger.info(f"{agent_name.capitalize()} executing step: {current_step.title}")
+
+    completed_info = "\n\n".join([f"## {s.title}\n{s.execution_res}" for s in completed_steps])
+    msg = f"{completed_info}\n\n## Task\n\n{current_step.title}\n\n{current_step.description}"
+    if agent_name == "researcher":
+        msg += "\n\nIMPORTANT: Add your references at the end as:\n- [Source Title](URL)"
+
+    agent_input = {"messages": [HumanMessage(content=msg)]}
+    result = await agent.ainvoke(agent_input, config={"recursion_limit": 25})
+    output = result["messages"][-1].content
+
+    current_step.execution_res = output
+    return Command(
+        update={
+            "messages": [HumanMessage(content=output, name=agent_name)],
+            "observations": state.get("observations", []) + [output],
+        },
+        goto="research_team",
+    )
+
+
+def human_feedback_node(state: State) -> Command[Literal["planner", "research_team", "reporter", "__end__"]]:
+    current_plan = state.get("current_plan", "")
+    auto_accepted_plan = state.get("auto_accepted_plan", False)
+
+    if not auto_accepted_plan:
+        feedback = interrupt("Please review the plan. Accept or edit.")
+
+        if feedback and str(feedback).upper().startswith("[EDIT_PLAN]"):
+            return Command(
+                update={"messages": [HumanMessage(content=feedback, name="feedback")]},
+                goto="planner",
+            )
+        elif feedback and str(feedback).upper().startswith("[ACCEPTED]"):
+            logger.info("Plan is accepted by user.")
+        else:
+            raise TypeError(f"Unsupported interrupt response: {feedback}")
+
+    plan_iterations = state.get("plan_iterations", 0)
+    goto = "research_team"
+
+    try:
+        if isinstance(current_plan, dict):
+            plan_dict = current_plan
+        else:
+            repaired = repair_json_output(current_plan)
+            plan_dict = json.loads(repaired)
+
+        plan_iterations += 1
+        if plan_dict.get("has_enough_context"):
+            goto = "reporter"
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON from plan")
+        return Command(goto="reporter" if plan_iterations > 0 else "__end__")
+
+    return Command(
+        update={
+            "current_plan": Plan.model_validate(plan_dict),
+            "plan_iterations": plan_iterations,
+            "locale": plan_dict.get("locale", "en-US"),
+        },
+        goto=goto,
+    )
+
+
+def background_investigation_node(state: State, config: RunnableConfig) -> Command[Literal["planner"]]:
+    logger.info("Background investigation node is running.")
+    configurable = Configuration.from_runnable_config(config)
+    query = state["messages"][-1].content
+
+    if SELECTED_SEARCH_ENGINE == SearchEngine.TAVILY:
+        search_results = LoggedTavilySearch(
+            max_results=configurable.max_search_results
+        ).invoke({"query": query})
+
+        if isinstance(search_results, list):
+            formatted = [
+                {"title": r["title"], "content": r["content"]}
+                for r in search_results
+            ]
+        else:
+            logger.error(f"Malformed Tavily response: {search_results}")
+            formatted = []
+    else:
+        formatted = get_web_search_tool(
+            configurable.max_search_results
+        ).invoke(query)
+
+    return Command(
+        update={"background_investigation_results": json.dumps(formatted, ensure_ascii=False)},
+        goto="planner",
+    )

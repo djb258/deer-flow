@@ -5,11 +5,13 @@
 Entry point script for the DeerFlow project.
 """
 
+# ✅ Inject OpenAI key early for LangChain + OpenAI SDK
+import os
+os.environ["OPENAI_API_KEY"] = "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"
+
 import argparse
 import asyncio
-
 from InquirerPy import inquirer
-
 from src.config.questions import BUILT_IN_QUESTIONS, BUILT_IN_QUESTIONS_ZH_CN
 from src.workflow import run_agent_workflow_async
 
@@ -21,15 +23,7 @@ def ask(
     max_step_num=3,
     enable_background_investigation=True,
 ):
-    """Run the agent workflow with the given question.
-
-    Args:
-        question: The user's query or request
-        debug: If True, enables debug level logging
-        max_plan_iterations: Maximum number of plan iterations
-        max_step_num: Maximum number of steps in a plan
-        enable_background_investigation: If True, performs web search before planning to enhance context
-    """
+    """Run the agent workflow with the given question."""
     asyncio.run(
         run_agent_workflow_async(
             user_input=question,
@@ -47,21 +41,12 @@ def main(
     max_step_num=3,
     enable_background_investigation=True,
 ):
-    """Interactive mode with built-in questions.
-
-    Args:
-        enable_background_investigation: If True, performs web search before planning to enhance context
-        debug: If True, enables debug level logging
-        max_plan_iterations: Maximum number of plan iterations
-        max_step_num: Maximum number of steps in a plan
-    """
-    # First select language
+    """Interactive mode with built-in questions."""
     language = inquirer.select(
         message="Select language / 选择语言:",
         choices=["English", "中文"],
     ).execute()
 
-    # Choose questions based on language
     questions = (
         BUILT_IN_QUESTIONS if language == "English" else BUILT_IN_QUESTIONS_ZH_CN
     )
@@ -69,7 +54,6 @@ def main(
         "[Ask my own question]" if language == "English" else "[自定义问题]"
     )
 
-    # Select a question
     initial_question = inquirer.select(
         message=(
             "What do you want to know?" if language == "English" else "您想了解什么?"
@@ -86,7 +70,6 @@ def main(
             ),
         ).execute()
 
-    # Pass all parameters to ask function
     ask(
         question=initial_question,
         debug=debug,
@@ -97,7 +80,6 @@ def main(
 
 
 if __name__ == "__main__":
-    # Set up argument parser
     parser = argparse.ArgumentParser(description="Run the Deer")
     parser.add_argument("query", nargs="*", help="The query to process")
     parser.add_argument(
@@ -128,7 +110,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.interactive:
-        # Pass command line arguments to main function
         main(
             debug=args.debug,
             max_plan_iterations=args.max_plan_iterations,
@@ -136,13 +117,11 @@ if __name__ == "__main__":
             enable_background_investigation=args.enable_background_investigation,
         )
     else:
-        # Parse user input from command line arguments or user input
         if args.query:
             user_query = " ".join(args.query)
         else:
             user_query = input("Enter your query: ")
 
-        # Run the agent workflow with the provided parameters
         ask(
             question=user_query,
             debug=args.debug,

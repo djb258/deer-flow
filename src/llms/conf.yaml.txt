@@ -1,0 +1,27 @@
+BASIC_MODEL:
+  base_url: https://api.openai.com/v1
+  model: gpt-4o
+  temperature: 0.3
+  api_key: ${OPENAI_API_KEY}
+
+REASONING_MODEL:
+  base_url: https://api.openai.com/v1
+  model: gpt-4
+  temperature: 0.3
+  api_key: ${OPENAI_API_KEY}
+
+VISION_MODEL:
+  base_url: https://api.openai.com/v1
+  model: gpt-4-vision-preview
+  temperature: 0.3
+  api_key: ${OPENAI_API_KEY}
+
+CLAUDE_MODEL:
+  base_url: https://api.anthropic.com/v1
+  model: claude-3-opus-20240229
+  api_key: ${ANTHROPIC_API_KEY}
+
+GEMINI_MODEL:
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-pro
+  api_key: ${GEMINI_API_KEY}

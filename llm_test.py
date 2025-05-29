@@ -1,0 +1,13 @@
+from src.llms.llm import get_llm_by_type
+
+print("\n=== Testing BASIC (OpenAI) ===")
+print(get_llm_by_type("basic").invoke("Say hello from OpenAI"))
+
+print("\n=== Testing CLAUDE ===")
+print(get_llm_by_type("claude").invoke("Say hello from Claude"))
+
+print("\n=== Testing GEMINI ===")
+print(get_llm_by_type("gemini").invoke("Say hello from Gemini"))
+
+print("=== Testing PERPLEXITY ===")
+print(get_llm_by_type("perplexity").invoke("Say hello from Perplexity"))
